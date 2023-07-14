@@ -1,0 +1,133 @@
+---
+prometheus: 
+  ingress: 
+    enabled: true
+    ingressClassName: nginx
+    annotations: 
+      cert-manager.io/cluster-issuer: letsencrypt-dns
+    tls:
+      - hosts:
+          - "${wildcard}"
+        secretName: wildcard-cert
+    hosts: 
+      - "${prom}"
+    paths: 
+      - /
+    pathType: Prefix
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    additionalScrapeConfigs: 
+      - job_name: 'cloudgen'
+        kubernetes_sd_configs:
+        - role: endpoints
+          kubeconfig_file: ""
+          follow_redirects: true
+          enable_http2: true
+          namespaces:
+            own_namespace: false
+            names:
+            - sock-shop
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scheme]
+          action: replace
+          target_label: __scheme__
+          regex: (https?)
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+          action: replace
+          target_label: __address__
+          regex: ([^:]+)(?::\d+)?;(\d+)
+          replacement: $1:$2
+        - action: labelmap
+          regex: __meta_kubernetes_service_label_(.+)
+        - source_labels: [__meta_kubernetes_namespace]
+          action: replace
+          target_label: kubernetes_namespace
+        - source_labels: [__meta_kubernetes_service_name]
+          action: replace
+          target_label: kubernetes_name
+    serviceMonitorSelector:
+      matchLabels:
+        release: monitoring
+grafana:
+  adminPassword: secret
+  ingress: 
+    enabled: true
+    ingressClassName: nginx
+    annotations: 
+      cert-manager.io/cluster-issuer: letsencrypt-dns
+    tls:
+      - hosts:
+          - "${wildcard}"
+        secretName: wildcard-cert
+    hosts: 
+      - "${graf}"
+    path: / 
+alertmanager:
+  config:
+    global:
+      resolve_timeout: 5m
+      slack_api_url: "${slack}"
+  route:
+    receiver: 'slack'
+    group_by:
+        - alertname
+        - namespace
+        - severity
+    repeatInterval: 30m
+    group_wait: 20s
+    group_interval: 4m
+    routes:
+    - receiver: 'slack'
+      matchers:
+      - severity: critical
+      continue: true
+  receivers:
+  - name: 'null'
+  - name: 'slack'
+    slackConfigs:
+      - api_url:  "${slack}"
+      - channel: #monitoring
+        send_resolved: true
+        title: 'Monitoring Event Notification'
+additionalPrometheusRulesMap:
+  custom-rules:
+    groups:
+    - name: node.rules
+      rules:
+      - alert: HostHighCpuLoad
+        expr: 100 - (avg by(instance) (rate(node_cpu_seconds_total{mode="idle"}[2m])) * 100) > 70
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          description: "CPU load on host is over 50%\n Value = {{ $value }}\n Instance = {{ $labels.instance }}\n"
+          summary: "Host CPU load high"
+      - alert: KubernetesPodCrashLooping
+        expr: kube_pod_container_status_restarts_total > 5
+        for: 0m
+        labels:
+          severity: critical
+        annotations: 
+          description: "Pod {{ $labels.pod }} in {{ $labels.namespace }} is crash looping\n Value = {{ $value }}"
+          summary: "Kubernetes pod crash looping"
+  cloudgenrules:
+    groups:
+    - name: HighErrorRate
+      rules:
+      - alert: HighErrorRate
+        expr: rate(request_duration_seconds_count{status_code="500"}[5m]) > 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High HTTP 500 error rates"
+          description: "Rate of HTTP 500 errors per 5 minutes: {{ $value }}"
+
+      
